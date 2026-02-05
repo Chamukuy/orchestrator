@@ -1,0 +1,28 @@
+# Multi-stage slim Dockerfile for Raft image
+FROM golang:1.16-bullseye as builder
+
+ENV GOPATH=/tmp/go
+
+RUN apt-get update -q -y && apt-get install -y rsync build-essential git
+
+WORKDIR /src
+COPY . .
+RUN ./script/build
+
+FROM debian:bullseye-slim
+LABEL maintainer="openark@github.com"
+
+RUN apt-get update -q -y && apt-get install -y ca-certificates --no-install-recommends && rm -rf /var/lib/apt/lists/*
+
+# Create runtime dirs and copy artifacts from builder
+RUN mkdir -p /usr/local/orchestrator /var/lib/orchestrator
+COPY --from=builder /src/bin/orchestrator /usr/local/orchestrator/orchestrator
+COPY --from=builder /src/bin/resources /usr/local/orchestrator/resources
+COPY --from=builder /src/docker/resources/systemctl.py /usr/bin/systemctl
+
+ENV PATH="/usr/local/orchestrator:${PATH}"
+
+WORKDIR /usr/local/orchestrator
+
+# Default command: run orchestrator (override in docker-compose)
+CMD ["/usr/local/orchestrator/orchestrator"]
