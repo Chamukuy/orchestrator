@@ -1,0 +1,53 @@
+version: "3.8"
+
+services:
+  mysql-slave:
+    image: mysql:8.0.44
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: orchestrator
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-slave-data:/var/lib/mysql
+    command:
+      - "--default-authentication-plugin=mysql_native_password"
+      - "--server-id=2"
+      - "--log-bin=mysql-bin"
+      - "--binlog-format=ROW"
+      - "--binlog-row-image=FULL"
+      - "--gtid-mode=ON"
+      - "--enforce-gtid-consistency=ON"
+      - "--log-slave-updates=ON"
+      - "--skip-name-resolve"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  orchestrator:
+    image: openark/orchestrator:latest
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+      - "10008:10008"
+    volumes:
+      - ./orchestrator.conf.json:/etc/orchestrator/orchestrator.conf.json:ro
+      - orchestrator-data:/var/lib/orchestrator
+    environment:
+      CONFIG_FILE: /etc/orchestrator/orchestrator.conf.json
+    command: ["/usr/local/orchestrator/orchestrator", "-config=/etc/orchestrator/orchestrator.conf.json", "-audit", "http"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:3000/api/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      - mysql-slave
+
+volumes:
+  mysql-slave-data:
+  orchestrator-data:

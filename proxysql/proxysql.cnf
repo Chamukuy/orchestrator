@@ -1,0 +1,314 @@
+# ProxySQL 主配置文件
+# 用于与 Orchestrator Raft + MySQL 主从集群集成
+
+###########################################################################################
+# 全局变量配置
+###########################################################################################
+global_variables=
+{
+	# 管理接口
+	admin_variables="
+		admin_listen_ip='0.0.0.0'
+		admin_listen_port=6032
+		admin_username='admin'
+		admin_password='admin'
+		mysql_ifaces='0.0.0.0:6032'
+		max_connections=512
+		debug=false
+	"
+	
+	# MySQL 连接池和线程配置
+	mysql_variables="
+		interfaces='0.0.0.0:6033'
+		max_connections=2048
+		default_query_timeout=30000
+		
+		# 连接池
+		connection_max_age_ms=3600000
+		connection_warming=true
+		
+		# 查询缓存（可选）
+		query_cache_size_MB=256
+		query_cache_default_time_ms=100
+		
+		# 健康检查
+		ping_interval_server_msec=5000
+		ping_timeout_server=200
+		
+		# 复制和主从
+		monitor_replication_lag=true
+		monitor_slave_lag_when_master=true
+		monitor_galera_when_ready=true
+	"
+	
+	# MySQL 主机配置
+	config_file='/etc/proxysql.cnf'
+	keep_multiplexing_variables='characterset,sql_mode,time_zone,sql_safe_updates,max_join_size'
+}
+
+###########################################################################################
+# Admin 变量详细配置
+###########################################################################################
+admin_variables=
+{
+	# 监听全部 IP
+	admin_listen_ip='0.0.0.0'
+	admin_listen_port=6032
+	admin_username='admin'
+	admin_password='admin'
+	
+	# Admin 接口认证
+	mysql_ifaces='0.0.0.0:6032'
+	max_connections=512
+	debug=false
+	
+	# 统计信息
+	stats_mysql_connection_pool_get_ok_total_count=5000
+	stats_mysql_query_digest_fetch_count=50
+}
+
+###########################################################################################
+# MySQL 变量详细配置
+###########################################################################################
+mysql_variables=
+{
+	# 监听端口
+	interfaces='0.0.0.0:6033'
+	
+	# 连接管理
+	max_connections=2048
+	default_max_connections=100
+	connection_max_age_ms=3600000
+	
+	# 连接池（核心）
+	server_version='8.0.44'
+	
+	# 查询超时
+	default_query_timeout=30000
+	
+	# 查询缓存
+	query_cache_size_MB=256
+	query_cache_default_time_ms=100
+	query_cache_type=1
+	
+	# 健康检查（关键）
+	ping_interval_server_msec=5000
+	ping_timeout_server=200
+	
+	# 自动故障转移检测
+	monitor_replication_lag=true
+	monitor_slave_lag_when_master=true
+	
+	# 连接复用
+	enable_client_deprecate_eof=true
+	
+	# 日志
+	log_mysql_warnings_queries_above_millisecond=1000
+}
+
+###########################################################################################
+# MySQL 后端服务器配置
+###########################################################################################
+mysql_servers=
+(
+	# Master (hostgroup_id=0)
+	{
+		hostgroup_id=0
+		hostname='mysql-master'
+		port=3306
+		weight=1000
+		status='ONLINE'
+		max_connections=100
+		comment='Master - write operations'
+	},
+	# Slave 1 (hostgroup_id=1)
+	{
+		hostgroup_id=1
+		hostname='mysql-slave-1'
+		port=3306
+		weight=1000
+		status='ONLINE'
+		max_connections=100
+		comment='Slave 1 - read operations'
+	},
+	# Slave 2 (hostgroup_id=1)
+	{
+		hostgroup_id=1
+		hostname='mysql-slave-2'
+		port=3306
+		weight=1000
+		status='ONLINE'
+		max_connections=100
+		comment='Slave 2 - read operations'
+	}
+)
+
+###########################################################################################
+# MySQL 查询转发规则 - 读写分离核心逻辑
+###########################################################################################
+mysql_query_rules=
+(
+	# 规则优先级从小到大执行，第一个匹配的规则生效
+	
+	# 规则 1: 注释和信息查询 -> Slave (非常快，可以分散到 Slave)
+	{
+		rule_id=1
+		match_pattern='^(SHOW|DESCRIBE|EXPLAIN|SELECT VERSION|SELECT @@|SELECT DATABASE)'
+		destination_hostgroup=1
+		apply=1
+		active=1
+		comment='INFO queries to slave'
+	},
+	
+	# 规则 2: SELECT 查询 -> Slave (读操作，分散到 Slave)
+	{
+		rule_id=2
+		match_pattern='^SELECT'
+		destination_hostgroup=1
+		apply=1
+		active=1
+		comment='SELECT queries to slave'
+	},
+	
+	# 规则 3: 写操作 (INSERT/UPDATE/DELETE) -> Master (写操作必须在 Master)
+	{
+		rule_id=3
+		match_pattern='^(INSERT|UPDATE|DELETE|REPLACE)'
+		destination_hostgroup=0
+		apply=1
+		active=1
+		comment='Write operations to master'
+	},
+	
+	# 规则 4: 事务控制 -> Master (事务始终在 Master 链接上)
+	{
+		rule_id=4
+		match_pattern='^(BEGIN|START TRANSACTION|COMMIT|ROLLBACK|SAVEPOINT)'
+		destination_hostgroup=0
+		apply=1
+		active=1
+		comment='Transaction control to master'
+	},
+	
+	# 规则 5: DDL 操作 -> Master (数据定义必须在 Master)
+	{
+		rule_id=5
+		match_pattern='^(CREATE|ALTER|DROP|TRUNCATE|RENAME)'
+		destination_hostgroup=0
+		apply=1
+		active=1
+		comment='DDL operations to master'
+	},
+	
+	# 规则 6: SET 操作 -> Master (设置会话变量要在 Master)
+	{
+		rule_id=6
+		match_pattern='^SET'
+		destination_hostgroup=0
+		apply=1
+		active=1
+		comment='SET operations to master'
+	},
+	
+	# 规则 7: CALL 存储过程 -> Master (存储过程可能包含写操作)
+	{
+		rule_id=7
+		match_pattern='^CALL'
+		destination_hostgroup=0
+		apply=1
+		active=1
+		comment='Stored procedures to master'
+	},
+	
+	# 规则 8: 锁定操作 -> Master
+	{
+		rule_id=8
+		match_pattern='^(LOCK|UNLOCK)'
+		destination_hostgroup=0
+		apply=1
+		active=1
+		comment='Lock operations to master'
+	},
+	
+	# 规则 9: 管理命令 -> Master
+	{
+		rule_id=9
+		match_pattern='^(GRANT|REVOKE|CREATE USER|ALTER USER|DROP USER|FLUSH)'
+		destination_hostgroup=0
+		apply=1
+		active=1
+		comment='Admin commands to master'
+	}
+)
+
+###########################################################################################
+# MySQL 用户配置 - 代理用户的凭证
+###########################################################################################
+mysql_users=
+(
+	# 应用程序连接 ProxySQL 使用的凭证
+	# ProxySQL 将用这个账号连接 MySQL 后端服务器
+	{
+		username='proxysql_user'
+		password='proxysql_pass'
+		hostgroup=0
+		active=1
+		max_connections=100
+		comment='Application user for ProxySQL'
+	},
+	# 可选：只读用户，始终使用 Slave
+	{
+		username='readonly_user'
+		password='readonly_pass'
+		hostgroup=1
+		active=0
+		max_connections=100
+		comment='Read-only user'
+	}
+)
+
+###########################################################################################
+# 监控配置
+###########################################################################################
+mysql_monitor_servers=
+(
+	# 定期健康检查
+	{
+		server='mysql-master'
+		port=3306
+		interval=5000
+		comment='Master health check'
+	},
+	{
+		server='mysql-slave-1'
+		port=3306
+		interval=5000
+		comment='Slave 1 health check'
+	},
+	{
+		server='mysql-slave-2'
+		port=3306
+		interval=5000
+		comment='Slave 2 health check'
+	}
+)
+
+###########################################################################################
+# 可选：ProxySQL Cluster 配置（用于 ProxySQL 自身高可用）
+# 如果部署多个 ProxySQL 节点，启用此配置
+###########################################################################################
+proxysql_servers=
+(
+	# {
+	#     hostname='proxysql-1'
+	#     port=6032
+	#     weight=1
+	#     comment='ProxySQL node 1'
+	# },
+	# {
+	#     hostname='proxysql-2'
+	#     port=6032
+	#     weight=1
+	#     comment='ProxySQL node 2'
+	# }
+)

@@ -1,0 +1,186 @@
+version: "3.8"
+
+services:
+  # 主节点 (Master)
+  mysql-master:
+    image: mysql:8.0.44
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: orchestrator
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-master-data:/var/lib/mysql
+      - ./docker/mysql-init:/docker-entrypoint-initdb.d:ro
+    command:
+      - "--default-authentication-plugin=mysql_native_password"
+      - "--server-id=1"
+      - "--log-bin=mysql-bin"
+      - "--binlog-format=ROW"
+      - "--binlog-row-image=FULL"
+      - "--gtid-mode=ON"
+      - "--enforce-gtid-consistency=ON"
+      - "--log-slave-updates=ON"
+      - "--skip-name-resolve"
+    networks:
+      - mysql-replication
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 从节点 1 (Slave 1)
+  mysql-slave-1:
+    image: mysql:8.0.44
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: orchestrator
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql-slave1-data:/var/lib/mysql
+    command:
+      - "--default-authentication-plugin=mysql_native_password"
+      - "--server-id=2"
+      - "--log-bin=mysql-bin"
+      - "--binlog-format=ROW"
+      - "--binlog-row-image=FULL"
+      - "--gtid-mode=ON"
+      - "--enforce-gtid-consistency=ON"
+      - "--log-slave-updates=ON"
+      - "--skip-name-resolve"
+    networks:
+      - mysql-replication
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      mysql-master:
+        condition: service_healthy
+
+  # 从节点 2 (Slave 2)
+  mysql-slave-2:
+    image: mysql:8.0.44
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: orchestrator
+    ports:
+      - "3308:3306"
+    volumes:
+      - mysql-slave2-data:/var/lib/mysql
+    command:
+      - "--default-authentication-plugin=mysql_native_password"
+      - "--server-id=3"
+      - "--log-bin=mysql-bin"
+      - "--binlog-format=ROW"
+      - "--binlog-row-image=FULL"
+      - "--gtid-mode=ON"
+      - "--enforce-gtid-consistency=ON"
+      - "--log-slave-updates=ON"
+      - "--skip-name-resolve"
+    networks:
+      - mysql-replication
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      mysql-master:
+        condition: service_healthy
+
+  # Orchestrator Raft Node 1
+  orchestrator-1:
+    image: openark/orchestrator:latest
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+      - "10008:10008"
+    volumes:
+      - ./conf/orchestrator-raft.conf.json:/etc/orchestrator/orchestrator-sample.conf.json:ro
+      - orchestrator-1-data:/var/lib/orchestrator
+    environment:
+      CONFIG_FILE: /etc/orchestrator/orchestrator-sample.conf.json
+    command: ["/usr/local/orchestrator/orchestrator", "-config=/etc/orchestrator/orchestrator-sample.conf.json", "-audit", "http"]
+    networks:
+      - mysql-replication
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:3000/api/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      - mysql-master
+      - mysql-slave-1
+      - mysql-slave-2
+
+  # Orchestrator Raft Node 2
+  orchestrator-2:
+    image: openark/orchestrator:latest
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+      - "10009:10008"
+    volumes:
+      - ./conf/orchestrator-raft.conf.json:/etc/orchestrator/orchestrator-sample.conf.json:ro
+      - orchestrator-2-data:/var/lib/orchestrator
+    environment:
+      CONFIG_FILE: /etc/orchestrator/orchestrator-sample.conf.json
+    command: ["/usr/local/orchestrator/orchestrator", "-config=/etc/orchestrator/orchestrator-sample.conf.json", "-audit", "http"]
+    networks:
+      - mysql-replication
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:3000/api/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      - mysql-master
+      - mysql-slave-1
+      - mysql-slave-2
+
+  # Orchestrator Raft Node 3
+  orchestrator-3:
+    image: openark/orchestrator:latest
+    restart: unless-stopped
+    ports:
+      - "3002:3000"
+      - "10010:10008"
+    volumes:
+      - ./conf/orchestrator-raft.conf.json:/etc/orchestrator/orchestrator-sample.conf.json:ro
+      - orchestrator-3-data:/var/lib/orchestrator
+    environment:
+      CONFIG_FILE: /etc/orchestrator/orchestrator-sample.conf.json
+    command: ["/usr/local/orchestrator/orchestrator", "-config=/etc/orchestrator/orchestrator-sample.conf.json", "-audit", "http"]
+    networks:
+      - mysql-replication
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:3000/api/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      - mysql-master
+      - mysql-slave-1
+      - mysql-slave-2
+
+volumes:
+  mysql-master-data:
+  mysql-slave1-data:
+  mysql-slave2-data:
+  orchestrator-1-data:
+  orchestrator-2-data:
+  orchestrator-3-data:
+
+networks:
+  mysql-replication:
+    driver: bridge
