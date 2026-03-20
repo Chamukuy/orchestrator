@@ -63,9 +63,50 @@ bin/orchestrator --debug --config /tmp/orchestrator-data/orchestrator-dev.conf.j
 
 Web UI at http://localhost:3000, API at http://localhost:3000/api/.
 
+### Cluster environment (orchestrator-ci-env)
+
+For full end-to-end testing with a MySQL replication topology, use `orchestrator-ci-env` (Docker-based):
+
+```bash
+# Clone and build (one-time)
+cd /tmp && git clone https://github.com/openark/orchestrator-ci-env.git
+cd /tmp/orchestrator-ci-env && sudo docker build . -f Dockerfile -t orchestrator-ci-env
+
+# Start the cluster environment (detached)
+sudo docker run -d --name orchestrator-ci-env \
+  -p 13306:13306 -p 10111:10111 -p 10112:10112 -p 10113:10113 -p 10114:10114 -p 8500:8500 \
+  -e "REPORT_HOSTNAME=127.0.0.1" \
+  orchestrator-ci-env:latest bash -c "script/docker-entry; sleep infinity"
+```
+
+This provides:
+- **4 MySQL nodes** (ports 10111-10114): master-replica topology with GTID, user `ci`/`ci`
+- **HAProxy** (port 13306): routes to current master
+- **Consul** (port 8500): service discovery + KV store
+
+Connect orchestrator to the cluster (disable Raft for single-node dev):
+
+```bash
+cat conf/orchestrator-ci-env.conf.json | python3 -c "
+import json, sys
+c = json.load(sys.stdin)
+c['SQLite3DataFile'] = '/tmp/orchestrator-cluster.sqlite3'
+c['RaftEnabled'] = False
+json.dump(c, sys.stdout, indent=2)
+" > /tmp/orchestrator-cluster.conf.json
+
+bin/orchestrator --debug --config /tmp/orchestrator-cluster.conf.json http
+```
+
+Orchestrator will auto-discover the 4-node topology within ~15 seconds. Web UI at http://localhost:3000/web/cluster/alias/ci.
+
+To rebuild the MySQL topology after destructive tests: `sudo docker exec orchestrator-ci-env script/deploy-replication 127.0.0.1`
+
 ### Gotchas
 
 - The `script/build` script recreates `.gopath/` on every invocation (deletes and re-symlinks). This is normal.
 - `go build -i` flag warning is expected on Go 1.16 (deprecated but functional).
 - The sample SQLite config's `SQLite3DataFile` points to `/usr/local/orchestrator/orchestrator.sqlite3` which likely doesn't exist; override it as shown above.
 - System tests (`script/test-system`) require a full Docker-based `orchestrator-ci-env` setup with MySQL topology, HAProxy, and Consul — not needed for development.
+- The `conf/orchestrator-ci-env.conf.json` has `RaftEnabled: true` by default. For single-node local dev, set it to `false` to avoid Raft consensus issues.
+- Docker-in-Docker in Cloud Agent VMs requires `fuse-overlayfs` storage driver and `iptables-legacy`.
